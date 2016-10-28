@@ -196,7 +196,7 @@ private let atEndDetails = "streamStatus.atEnd"
 private let timeoutDetails = "The operation couldn’t be completed. Operation timed out"
 private let timeoutDuration : CFTimeInterval = 30
 
-public enum WebSocketError : Error, CustomStringConvertible {
+public enum WebSocketError : LocalizedError, CustomStringConvertible {
     case memory
     case needMoreInput
     case invalidHeader
@@ -231,6 +231,12 @@ public enum WebSocketError : Error, CustomStringConvertible {
         case .network(let details): return details
         default: return ""
         }
+    }
+    public var errorDescription: String? {
+        return self.description
+    }
+    public var failureReason: String? {
+        return self.description
     }
 }
 
@@ -494,19 +500,32 @@ private class Deflater {
 /// WebSocketDelegate is an Objective-C alternative to WebSocketEvents and is used to delegate the events for the WebSocket connection.
 @objc public protocol WebSocketDelegate {
     /// A function to be called when the WebSocket connection's readyState changes to .Open; this indicates that the connection is ready to send and receive data.
-    func webSocketOpen()
+    @objc(webSocketDidOpen:)
+    func didOpen(_ webSocket: WebSocket)
+
     /// A function to be called when the WebSocket connection's readyState changes to .Closed.
-    func webSocketClose(_ code: Int, reason: String, wasClean: Bool)
+    @objc(webSocket:didCloseWithCode:reason:wasClean:)
+    func didClose(_ webSocket: WebSocket, code: Int, reason: String, wasClean: Bool)
+
     /// A function to be called when an error occurs.
-    func webSocketError(_ error: NSError)
+    @objc(webSocket:didCloseWithError:)
+    func didClose(_ webSocket: WebSocket, error: NSError)
+
     /// A function to be called when a message (string) is received from the server.
-    @objc optional func webSocketMessageText(_ text: String)
+    @objc(webSocket:didReceiveMessageWithText:)
+    optional func didReceiveMessage(_ webSocket: WebSocket, text: String)
+
     /// A function to be called when a message (binary) is received from the server.
-    @objc optional func webSocketMessageData(_ data: Data)
+    @objc(webSocket:didReceiveMessageWithData:)
+    optional func didReceiveMessage(_ webSocket: WebSocket, data: Data)
+
     /// A function to be called when a pong is received from the server.
-    @objc optional func webSocketPong()
+    @objc(webSocket:didReceivePongWithData:)
+    optional func didReceivePong(_ webSocket: WebSocket, data: Data)
+
     /// A function to be called when the WebSocket process has ended; this event is guarenteed to be called once and can be used as an alternative to the "close" or "error" events.
-    @objc optional func webSocketEnd(_ code: Int, reason: String, wasClean: Bool, error: NSError?)
+    @objc(webSocket:didEndWithCode:reason:wasClean:error:)
+    optional func didEnd(_ webSocket: WebSocket, code: Int, reason: String, wasClean: Bool, error: NSError?)
 }
 
 /// WebSocket objects are bidirectional network streams that communicate over HTTP. RFC 6455.
@@ -530,6 +549,7 @@ private class InnerWebSocket: Hashable {
     var createdAt = CFAbsoluteTimeGetCurrent()
     var connectionTimeout = false
     var eclose : ()->() = {}
+    weak var _facade: WebSocket?
     var _eventQueue : DispatchQueue? = DispatchQueue.main
     var _subProtocol = ""
     var _compression = WebSocketCompression()
@@ -568,6 +588,10 @@ private class InnerWebSocket: Hashable {
         get { lock(); defer { unlock() }; return _event }
         set { lock(); defer { unlock() }; _event = newValue }
     }
+    var facade : WebSocket? {
+        get { lock(); defer { unlock() }; return _facade }
+        set { lock(); defer { unlock() }; _facade = newValue }
+    }
     var eventDelegate : WebSocketDelegate? {
         get { lock(); defer { unlock() }; return _eventDelegate }
         set { lock(); defer { unlock() }; _eventDelegate = newValue }
@@ -596,7 +620,9 @@ private class InnerWebSocket: Hashable {
         ws.services = services
         ws.event = event
         ws.eventQueue = eventQueue
+        ws.eventDelegate = eventDelegate;
         ws.binaryType = binaryType
+        ws.facade = facade;
         return ws
     }
 
@@ -629,7 +655,7 @@ private class InnerWebSocket: Hashable {
         if inputBytes != nil {
             free(inputBytes)
         }
-        pthread_mutex_init(&mutex, nil)
+        pthread_mutex_destroy(&mutex)
     }
     @inline(__always) fileprivate func lock(){
         pthread_mutex_lock(&mutex)
@@ -702,7 +728,9 @@ private class InnerWebSocket: Hashable {
                 privateReadyState = .open
                 fire {
                     self.event.open()
-                    self.eventDelegate?.webSocketOpen()
+                    if let facade = self.facade {
+                        self.eventDelegate?.didOpen(facade)
+                    }
                 }
                 stage = .handleFrames
             case .handleFrames:
@@ -717,19 +745,26 @@ private class InnerWebSocket: Hashable {
                 case .text:
                     fire {
                         self.event.message(data: frame.utf8.text)
-                        self.eventDelegate?.webSocketMessageText?(frame.utf8.text)
+                        if let facade = self.facade {
+                            self.eventDelegate?.didReceiveMessage?(facade, text: frame.utf8.text)
+                        }
                     }
                 case .binary:
                     fire {
-                        switch self.binaryType {
-                        case .uInt8Array:
-                            self.event.message(data: frame.payload.array)
-                        case .nsData:
-                            self.event.message(data: frame.payload.nsdata)
-                            // The WebSocketDelegate is necessary to add Objective-C compability and it is only possible to send binary data with NSData.
-                            self.eventDelegate?.webSocketMessageData?(frame.payload.nsdata)
-                        case .uInt8UnsafeBufferPointer:
-                            self.event.message(data: frame.payload.buffer)
+                        if let eventDelegate = self.eventDelegate {
+                            if let facade = self.facade {
+                                eventDelegate.didReceiveMessage?(facade, data: frame.payload.nsdata)
+                            }
+                        }
+                        else {
+                            switch self.binaryType {
+                            case .uInt8Array:
+                                self.event.message(data: frame.payload.array)
+                            case .nsData:
+                                self.event.message(data: frame.payload.nsdata)
+                            case .uInt8UnsafeBufferPointer:
+                                self.event.message(data: frame.payload.buffer)
+                            }
                         }
                     }
                 case .ping:
@@ -740,15 +775,21 @@ private class InnerWebSocket: Hashable {
                     unlock()
                 case .pong:
                     fire {
-                        switch self.binaryType {
-                        case .uInt8Array:
-                            self.event.pong(data: frame.payload.array)
-                        case .nsData:
-                            self.event.pong(data: frame.payload.nsdata)
-                        case .uInt8UnsafeBufferPointer:
-                            self.event.pong(data: frame.payload.buffer)
+                        if let eventDelegate = self.eventDelegate {
+                            if let facade = self.facade {
+                                eventDelegate.didReceivePong?(facade, data: frame.payload.nsdata)
+                            }
                         }
-                        self.eventDelegate?.webSocketPong?()
+                        else {
+                            switch self.binaryType {
+                            case .uInt8Array:
+                                self.event.pong(data: frame.payload.array)
+                            case .nsData:
+                                self.event.pong(data: frame.payload.nsdata)
+                            case .uInt8UnsafeBufferPointer:
+                                self.event.pong(data: frame.payload.buffer)
+                            }
+                        }
                     }
                 case .close:
                     lock()
@@ -760,7 +801,9 @@ private class InnerWebSocket: Hashable {
             case .closeConn:
                 if let error = finalError {
                     self.event.error(error)
-                    self.eventDelegate?.webSocketError(error as NSError)
+                    if let facade = self.facade {
+                        self.eventDelegate?.didClose(facade, error: error as NSError)
+                    }
                 }
                 privateReadyState = .closed
                 if rd != nil {
@@ -768,14 +811,18 @@ private class InnerWebSocket: Hashable {
                     fire {
                         self.eclose()
                         self.event.close(Int(self.closeCode), self.closeReason, self.closeFinal)
-                        self.eventDelegate?.webSocketClose(Int(self.closeCode), reason: self.closeReason, wasClean: self.closeFinal)
+                        if let facade = self.facade {
+                            self.eventDelegate?.didClose(facade, code: Int(self.closeCode), reason: self.closeReason, wasClean: self.closeFinal)
+                        }
                     }
                 }
                 stage = .end
             case .end:
                 fire {
                     self.event.end(Int(self.closeCode), self.closeReason, self.closeClean, self.finalError)
-                    self.eventDelegate?.webSocketEnd?(Int(self.closeCode), reason: self.closeReason, wasClean: self.closeClean, error: self.finalError as? NSError)
+                    if let facade = self.facade {
+                        self.eventDelegate?.didEnd?(facade, code: Int(self.closeCode), reason: self.closeReason, wasClean: self.closeClean, error: self.finalError as? NSError)
+                    }
                 }
                 exit = true
                 manager.remove(self)
@@ -1652,18 +1699,22 @@ open class WebSocket: NSObject {
     fileprivate var opened: Bool
     open override var hashValue: Int { return id }
     /// Create a WebSocket connection to a URL; this should be the URL to which the WebSocket server will respond.
+    @objc(initWithString:)
     public convenience init(_ url: String){
         self.init(request: URLRequest(url: URL(string: url)!), subProtocols: [])
     }
     /// Create a WebSocket connection to a URL; this should be the URL to which the WebSocket server will respond.
+    @objc(initWithURL:)
     public convenience init(url: URL){
         self.init(request: URLRequest(url: url), subProtocols: [])
     }
     /// Create a WebSocket connection to a URL; this should be the URL to which the WebSocket server will respond. Also include a list of protocols.
+    @objc(initWithString:subProtocols:)
     public convenience init(_ url: String, subProtocols : [String]){
         self.init(request: URLRequest(url: URL(string: url)!), subProtocols: subProtocols)
     }
     /// Create a WebSocket connection to a URL; this should be the URL to which the WebSocket server will respond. Also include a protocol.
+    @objc(initWithString:subProtocol:)
     public convenience init(_ url: String, subProtocol : String){
         self.init(request: URLRequest(url: URL(string: url)!), subProtocols: [subProtocol])
     }
@@ -1681,6 +1732,7 @@ open class WebSocket: NSObject {
                 strongSelf.opened = false
             }
         }
+        ws.facade = self;
     }
     /// Create a WebSocket object with a deferred connection; the connection is not opened until the .open() method is called.
     public convenience override init(){
@@ -1689,6 +1741,7 @@ open class WebSocket: NSObject {
         self.init(request: request, subProtocols: [])
     }
     /// The URL as resolved by the constructor. This is always an absolute URL. Read only.
+    @objc(URLAbsoluteString)
     open var url : String{ return ws.url }
     /// A string indicating the name of the sub-protocol the server selected; this will be one of the strings specified in the protocols parameter when creating the WebSocket object.
     open var subProtocol : String{ return ws.subProtocol }
@@ -1731,14 +1784,17 @@ open class WebSocket: NSObject {
         open(request: URLRequest(url: URL(string: url)!), subProtocols: [])
     }
     /// Opens a deferred or closed WebSocket connection to a URL; this should be the URL to which the WebSocket server will respond.
+    @objc(openWithURL:)
     open func open(nsurl url: URL){
         open(request: URLRequest(url: url), subProtocols: [])
     }
     /// Opens a deferred or closed WebSocket connection to a URL; this should be the URL to which the WebSocket server will respond. Also include a list of protocols.
+    @objc(openWithURL:subProtocols:)
     open func open(_ url: String, subProtocols : [String]){
         open(request: URLRequest(url: URL(string: url)!), subProtocols: subProtocols)
     }
     /// Opens a deferred or closed WebSocket connection to a URL; this should be the URL to which the WebSocket server will respond. Also include a protocol.
+    @objc(openWithURL:subProtocol:)
     open func open(_ url: String, subProtocol : String){
         open(request: URLRequest(url: URL(string: url)!), subProtocols: [subProtocol])
     }
