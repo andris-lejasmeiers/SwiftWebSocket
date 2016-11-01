@@ -196,48 +196,74 @@ private let atEndDetails = "streamStatus.atEnd"
 private let timeoutDetails = "The operation couldn’t be completed. Operation timed out"
 private let timeoutDuration : CFTimeInterval = 30
 
-public enum WebSocketError : LocalizedError, CustomStringConvertible {
+@objc public enum WebSocketErrorType: Int, CustomStringConvertible {
     case memory
     case needMoreInput
     case invalidHeader
     case invalidAddress
-    case network(String)
-    case libraryError(String)
-    case payloadError(String)
-    case protocolError(String)
-    case invalidResponse(String)
-    case invalidCompressionOptions(String)
+    case network
+    case library
+    case payload
+    case protocolFail
+    case invalidResponse
+    case invalidCompressionOptions
     public var description : String {
         switch self {
-        case .memory: return "Memory"
-        case .needMoreInput: return "NeedMoreInput"
-        case .invalidAddress: return "InvalidAddress"
-        case .invalidHeader: return "InvalidHeader"
-        case let .invalidResponse(details): return "InvalidResponse(\(details))"
-        case let .invalidCompressionOptions(details): return "InvalidCompressionOptions(\(details))"
-        case let .libraryError(details): return "LibraryError(\(details))"
-        case let .protocolError(details): return "ProtocolError(\(details))"
-        case let .payloadError(details): return "PayloadError(\(details))"
-        case let .network(details): return "Network(\(details))"
+        case .memory:
+            return "Memory"
+        case .needMoreInput:
+            return "NeedMoreInput"
+        case .invalidAddress:
+            return "InvalidAddress"
+        case .invalidHeader:
+            return "InvalidHeader"
+        case let .invalidResponse:
+            return "InvalidResponse"
+        case let .invalidCompressionOptions:
+            return "InvalidCompressionOptions"
+        case let .library:
+            return "Library"
+        case let .protocolFail:
+            return "ProtocolError"
+        case let .payload:
+            return "Payload"
+        case let .network:
+            return "Network"
         }
     }
-    public var details : String {
-        switch self {
-        case .invalidResponse(let details): return details
-        case .invalidCompressionOptions(let details): return details
-        case .libraryError(let details): return details
-        case .protocolError(let details): return details
-        case .payloadError(let details): return details
-        case .network(let details): return details
-        default: return ""
+}
+
+public struct WebSocketError: CustomNSError {
+    let type: WebSocketErrorType
+    let reason: String?
+    let underlyingError: Error?
+    init(_ type: WebSocketErrorType, reason: String? = nil, underlyingError: Error? = nil) {
+        self.type = type
+        self.reason = reason
+        self.underlyingError = underlyingError
+    }
+    public static var errorDomain: String {
+        return WebSocket.errorDomain
+    }
+    /// The error code within the given domain.
+    public var errorCode: Int {
+        return self.type.rawValue
+    }
+    /// The user-info dictionary.
+    public var errorUserInfo: [String : Any] {
+        var result: [String : Any] = [:]
+        if let reason = self.reason {
+            result[NSLocalizedFailureReasonErrorKey as String] = reason;
         }
+        if let underlyingError = self.underlyingError {
+            result[NSUnderlyingErrorKey as String] = underlyingError;
+        }
+        return result
     }
-    public var errorDescription: String? {
-        return self.description
-    }
-    public var failureReason: String? {
-        return self.description
-    }
+}
+
+func ~=(lhs: WebSocketError, rhs: Error) -> Bool {
+    return WebSocketError.errorDomain == rhs._domain && lhs.errorCode   == rhs._code
 }
 
 private class UTF8 {
@@ -254,7 +280,7 @@ private class UTF8 {
                 return
             }
             if byte == 0xC0 || byte == 0xC1 {
-                throw WebSocketError.payloadError("invalid codepoint: invalid byte")
+                throw WebSocketError(.payload, reason: "invalid codepoint: invalid byte")
             }
             if byte >> 5 & 0x7 == 0x6 {
                 count = 2
@@ -263,26 +289,26 @@ private class UTF8 {
             } else if byte >> 3 & 0x1F == 0x1E {
                 count = 4
             } else {
-                throw WebSocketError.payloadError("invalid codepoint: frames")
+                throw WebSocketError(.payload, reason: "invalid codepoint: frames")
             }
             procd = 1
             codepoint = (UInt32(byte) & (0xFF >> count)) << ((count-1) * 6)
             return
         }
         if byte >> 6 & 0x3 != 0x2 {
-            throw WebSocketError.payloadError("invalid codepoint: signature")
+            throw WebSocketError(.payload, reason: "invalid codepoint: signature")
         }
         codepoint += UInt32(byte & 0x3F) << ((count-procd-1) * 6)
         if codepoint > 0x10FFFF || (codepoint >= 0xD800 && codepoint <= 0xDFFF) {
-            throw WebSocketError.payloadError("invalid codepoint: out of bounds")
+            throw WebSocketError(.payload, reason: "invalid codepoint: out of bounds")
         }
         procd += 1
         if procd == count {
             if codepoint <= 0x7FF && count > 2 {
-                throw WebSocketError.payloadError("invalid codepoint: overlong")
+                throw WebSocketError(.payload, reason: "invalid codepoint: overlong")
             }
             if codepoint <= 0xFFFF && count > 3 {
-                throw WebSocketError.payloadError("invalid codepoint: overlong")
+                throw WebSocketError(.payload, reason: "invalid codepoint: overlong")
             }
             procd = 0
             count = 0
@@ -385,7 +411,7 @@ private func zerror(_ res : CInt) -> Error? {
     case -6: err = "version error"
     default: err = "undefined error"
     }
-    return WebSocketError.payloadError("zlib: \(err): \(res)")
+    return WebSocketError(.payload, reason: "zlib: \(err): \(res)")
 }
 
 private struct z_stream {
@@ -459,7 +485,7 @@ private class Inflater {
                     bufferSize *= 2
                     let nbuf = realloc(buffer, bufferSize)
                     if nbuf == nil {
-                        throw WebSocketError.payloadError("memory")
+                        throw WebSocketError(.payload, reason: "memory")
                     }
                     buffer = nbuf
                     buf = buffer?.advanced(by: Int(buflen))
@@ -508,8 +534,8 @@ private class Deflater {
     func didClose(_ webSocket: WebSocket, code: Int, reason: String, wasClean: Bool)
 
     /// A function to be called when an error occurs.
-    @objc(webSocket:didCloseWithError:)
-    func didClose(_ webSocket: WebSocket, error: NSError)
+    @objc(webSocket:didFailWithError:)
+    func didFail(_ webSocket: WebSocket, error: NSError)
 
     /// A function to be called when a message (string) is received from the server.
     @objc(webSocket:didReceiveMessageWithText:)
@@ -802,7 +828,7 @@ private class InnerWebSocket: Hashable {
                 if let error = finalError {
                     self.event.error(error)
                     if let facade = self.facade {
-                        self.eventDelegate?.didClose(facade, error: error as NSError)
+                        self.eventDelegate?.didFail(facade, error: error as NSError)
                     }
                 }
                 privateReadyState = .closed
@@ -827,7 +853,7 @@ private class InnerWebSocket: Hashable {
                 exit = true
                 manager.remove(self)
             }
-        } catch WebSocketError.needMoreInput {
+        } catch WebSocketError(.needMoreInput) {
             more = true
         } catch {
             if finalError != nil {
@@ -839,17 +865,17 @@ private class InnerWebSocket: Hashable {
             } else {
                 var frame : Frame?
                 if let error = error as? WebSocketError{
-                    switch error {
-                    case .network(let details):
-                        if details == atEndDetails{
+                    switch error.type {
+                    case .network:
+                        if let details = error.reason, details == atEndDetails {
                             stage = .closeConn
                             frame = Frame.makeClose(1006, reason: "Abnormal Closure")
                             atEnd = true
                             finalError = nil
                         }
-                    case .protocolError:
+                    case .protocolFail:
                         frame = Frame.makeClose(1002, reason: "Protocol error")
-                    case .payloadError:
+                    case .payload:
                         frame = Frame.makeClose(1007, reason: "Payload error")
                     default:
                         break
@@ -882,7 +908,7 @@ private class InnerWebSocket: Hashable {
                 if atEnd {
                     return;
                 }
-                throw WebSocketError.network(atEndDetails)
+                throw WebSocketError(.network, reason: atEndDetails)
             }
             if more {
                 while rd.hasBytesAvailable {
@@ -893,7 +919,7 @@ private class InnerWebSocket: Hashable {
                     if size > inputBytesSize {
                         let ptr = realloc(inputBytes, size)
                         if ptr == nil {
-                            throw WebSocketError.memory
+                            throw WebSocketError(.memory)
                         }
                         inputBytes = ptr?.assumingMemoryBound(to: UInt8.self)
                         inputBytesSize = size
@@ -920,13 +946,13 @@ private class InnerWebSocket: Hashable {
     func stepStreamErrors() throws {
         if finalError == nil {
             if connectionTimeout {
-                throw WebSocketError.network(timeoutDetails)
+                throw WebSocketError(.network, reason: timeoutDetails)
             }
             if let error = rd?.streamError {
-                throw WebSocketError.network(error.localizedDescription)
+                throw WebSocketError(.network, reason: "Input Stream Error", underlyingError: error)
             }
             if let error = wr?.streamError {
-                throw WebSocketError.network(error.localizedDescription)
+                throw WebSocketError(.network, reason: "Output Stream Error", underlyingError: error)
             }
         }
     }
@@ -975,13 +1001,13 @@ private class InnerWebSocket: Hashable {
                 finished = frame.finished
             }
             if frame.code == .continue{
-                throw WebSocketError.protocolError("leader frame cannot be a continue frame")
+                throw WebSocketError(.protocolFail, reason: "leader frame cannot be a continue frame")
             }
             if !finished {
                 readStateSaved = true
                 readStateFrame = frame
                 readStateFinished = finished
-                throw WebSocketError.needMoreInput
+                throw WebSocketError(.needMoreInput)
             }
         } else {
             frame = readStateFrame!
@@ -991,7 +1017,7 @@ private class InnerWebSocket: Hashable {
                 finished = cf.finished
                 if cf.code != .continue {
                     if !cf.code.isControl {
-                        throw WebSocketError.protocolError("only ping frames can be interlaced with fragments")
+                        throw WebSocketError(.protocolFail, reason: "only ping frames can be interlaced with fragments")
                     }
                     leaderFrame = frame
                     return cf
@@ -1000,12 +1026,12 @@ private class InnerWebSocket: Hashable {
                     readStateSaved = true
                     readStateFrame = frame
                     readStateFinished = finished
-                    throw WebSocketError.needMoreInput
+                    throw WebSocketError(.needMoreInput)
                 }
             }
         }
         if !frame.utf8.completed {
-            throw WebSocketError.payloadError("incomplete utf8")
+            throw WebSocketError(.payload, reason: "incomplete utf8")
         }
         readStateSaved = false
         readStateFrame = nil
@@ -1032,7 +1058,7 @@ private class InnerWebSocket: Hashable {
         req.setValue("13", forHTTPHeaderField: "Sec-WebSocket-Version")
 
         if req.url == nil || req.url!.host == nil{
-            throw WebSocketError.invalidAddress
+            throw WebSocketError(.invalidAddress)
         }
         if req.url!.port == nil || req.url!.port! == 80 || req.url!.port! == 443 {
             req.setValue(req.url!.host!, forHTTPHeaderField: "Host")
@@ -1047,7 +1073,7 @@ private class InnerWebSocket: Hashable {
             req.setValue(subProtocols.joined(separator: ","), forHTTPHeaderField: "Sec-WebSocket-Protocol")
         }
         if req.url!.scheme != "wss" && req.url!.scheme != "ws" {
-            throw WebSocketError.invalidAddress
+            throw WebSocketError(.invalidAddress)
         }
         if compression.on {
             var val = "permessage-deflate"
@@ -1099,7 +1125,7 @@ private class InnerWebSocket: Hashable {
         }
         let addr = ["\(req.url!.host!)", "\(port)"]
         if addr.count != 2 || Int(addr[1]) == nil {
-            throw WebSocketError.invalidAddress
+            throw WebSocketError(.invalidAddress)
         }
 
         var (rdo, wro) : (InputStream?, OutputStream?)
@@ -1149,7 +1175,7 @@ private class InnerWebSocket: Hashable {
             }
             let ptr = realloc(outputBytes, size)
             if ptr == nil {
-                throw WebSocketError.memory
+                throw WebSocketError(.memory)
             }
             outputBytes = ptr?.assumingMemoryBound(to: UInt8.self)
             outputBytesSize = size
@@ -1162,13 +1188,13 @@ private class InnerWebSocket: Hashable {
         let end : [UInt8] = [ 0x0D, 0x0A, 0x0D, 0x0A ]
         let ptr = memmem(inputBytes!+inputBytesStart, inputBytesLength, end, 4)
         if ptr == nil {
-            throw WebSocketError.needMoreInput
+            throw WebSocketError(.needMoreInput)
         }
         let buffer = inputBytes!+inputBytesStart
         let bufferCount = ptr!.assumingMemoryBound(to: UInt8.self)-(inputBytes!+inputBytesStart)
         let string = NSString(bytesNoCopy: buffer, length: bufferCount, encoding: String.Encoding.utf8.rawValue, freeWhenDone: false) as? String
         if string == nil {
-            throw WebSocketError.invalidHeader
+            throw WebSocketError(.invalidHeader)
         }
         let header = string!
         var needsCompression = false
@@ -1182,7 +1208,7 @@ private class InnerWebSocket: Hashable {
             let line = trim(lines[i])
             if i == 0  {
                 if !line.hasPrefix("HTTP/1.1 101"){
-                    throw WebSocketError.invalidResponse(line)
+                    throw WebSocketError(.invalidResponse, reason: line)
                 }
             } else if line != "" {
                 var value = ""
@@ -1218,18 +1244,18 @@ private class InnerWebSocket: Hashable {
         }
         if needsCompression {
             if serverMaxWindowBits < 8 || serverMaxWindowBits > 15 {
-                throw WebSocketError.invalidCompressionOptions("server_max_window_bits")
+                throw WebSocketError(.invalidCompressionOptions, reason: "server_max_window_bits")
             }
             if serverMaxWindowBits < 8 || serverMaxWindowBits > 15 {
-                throw WebSocketError.invalidCompressionOptions("client_max_window_bits")
+                throw WebSocketError(.invalidCompressionOptions, reason: "client_max_window_bits")
             }
             inflater = Inflater(windowBits: serverMaxWindowBits)
             if inflater == nil {
-                throw WebSocketError.invalidCompressionOptions("inflater init")
+                throw WebSocketError(.invalidCompressionOptions, reason: "inflater init")
             }
             deflater = Deflater(windowBits: clientMaxWindowBits, memLevel: 8)
             if deflater == nil {
-                throw WebSocketError.invalidCompressionOptions("deflater init")
+                throw WebSocketError(.invalidCompressionOptions, reason: "deflater init")
             }
         }
         inputBytesLength -= bufferCount+4
@@ -1251,7 +1277,7 @@ private class InnerWebSocket: Hashable {
         }
         func readByte() throws -> UInt8 {
             if bytes >= end {
-                throw WebSocketError.needMoreInput
+                throw WebSocketError(.needMoreInput)
             }
             let b = bytes.pointee
             bytes += 1
@@ -1318,7 +1344,7 @@ private class InnerWebSocket: Hashable {
             if inflater != nil && (rsv1 || (leader != nil && leader!.inflate)) {
                 inflate = true
             } else if rsv1 || rsv2 || rsv3 {
-                throw WebSocketError.protocolError("invalid extension")
+                throw WebSocketError(.protocolFail, reason: "invalid extension")
             } else {
                 inflate = false
             }
@@ -1326,14 +1352,14 @@ private class InnerWebSocket: Hashable {
             if let c = OpCode(rawValue: (b & 0xF)){
                 code = c
             } else {
-                throw WebSocketError.protocolError("invalid opcode")
+                throw WebSocketError(.protocolFail, reason: "invalid opcode")
             }
             if !fin && code.isControl {
-                throw WebSocketError.protocolError("unfinished control frame")
+                throw WebSocketError(.protocolFail, reason: "unfinished control frame")
             }
             b = try reader.readByte()
             if b >> 7 & 0x1 == 0x1 {
-                throw WebSocketError.protocolError("server sent masked frame")
+                throw WebSocketError(.protocolFail, reason: "server sent masked frame")
             }
             var len64 = Int64(b & 0x7F)
             var bcount = 0
@@ -1344,7 +1370,7 @@ private class InnerWebSocket: Hashable {
             }
             if bcount != 0 {
                 if code.isControl {
-                    throw WebSocketError.protocolError("invalid payload size for control frame")
+                    throw WebSocketError(.protocolFail, reason: "invalid payload size for control frame")
                 }
                 len64 = 0
                 var i = bcount-1
@@ -1357,10 +1383,10 @@ private class InnerWebSocket: Hashable {
             len = Int(len64)
             if code == .continue {
                 if code.isControl {
-                    throw WebSocketError.protocolError("control frame cannot have the 'continue' opcode")
+                    throw WebSocketError(.protocolFail, reason: "control frame cannot have the 'continue' opcode")
                 }
                 if leader == nil {
-                    throw WebSocketError.protocolError("continue frame is missing it's leader")
+                    throw WebSocketError(.protocolFail, reason: "continue frame is missing it's leader")
                 }
             }
             if code.isControl {
@@ -1368,7 +1394,7 @@ private class InnerWebSocket: Hashable {
                     leader = nil
                 }
                 if inflate {
-                    throw WebSocketError.protocolError("control frame cannot be compressed")
+                    throw WebSocketError(.protocolFail, reason: "control frame cannot be compressed")
                 }
             }
             statusCode = 0
@@ -1384,7 +1410,7 @@ private class InnerWebSocket: Hashable {
             }
             if leaderCode == .close {
                 if len == 1 {
-                    throw WebSocketError.protocolError("invalid payload size for close frame")
+                    throw WebSocketError(.protocolFail, reason: "invalid payload size for close frame")
                 }
                 if len >= 2 {
                     let b1 = try reader.readByte()
@@ -1392,7 +1418,7 @@ private class InnerWebSocket: Hashable {
                     statusCode = (UInt16(b1) << 8) + UInt16(b2)
                     len -= 2
                     if statusCode < 1000 || statusCode > 4999  || (statusCode >= 1004 && statusCode <= 1006) || (statusCode >= 1012 && statusCode <= 2999) {
-                        throw WebSocketError.protocolError("invalid status code for close frame")
+                        throw WebSocketError(.protocolFail, reason: "invalid status code for close frame")
                     }
                 }
             }
@@ -1439,7 +1465,7 @@ private class InnerWebSocket: Hashable {
             fragStateInflate = inflate
             fragStatePosition = reader.position
             fragStateSaved = true
-            throw WebSocketError.needMoreInput
+            throw WebSocketError(.needMoreInput)
         }
 
         inputBytesLength -= reader.position
@@ -1457,7 +1483,7 @@ private class InnerWebSocket: Hashable {
     var head = [UInt8](repeating: 0, count: 0xFF)
     func writeFrame(_ f : Frame) throws {
         if !f.finished{
-            throw WebSocketError.libraryError("cannot send unfinished frames")
+            throw WebSocketError(.library, reason: "cannot send unfinished frames")
         }
         var hlen = 0
         let b : UInt8 = 0x80
@@ -1694,9 +1720,12 @@ private let manager = Manager()
 
 /// WebSocket objects are bidirectional network streams that communicate over HTTP. RFC 6455.
 open class WebSocket: NSObject {
+    /// WebSocket error domain
+    open static let errorDomain = "WebSocket"
     fileprivate var ws: InnerWebSocket
     fileprivate var id = manager.nextId()
     fileprivate var opened: Bool
+    /// Returns an integer that can be used to identify WebSocket instance.
     open override var hashValue: Int { return id }
     /// Create a WebSocket connection to a URL; this should be the URL to which the WebSocket server will respond.
     @objc(initWithString:)
