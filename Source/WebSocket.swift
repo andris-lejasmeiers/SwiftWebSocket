@@ -194,7 +194,6 @@ public struct WebSocketService :  OptionSet {
 
 private let atEndDetails = "streamStatus.atEnd"
 private let timeoutDetails = "The operation couldn’t be completed. Operation timed out"
-private let timeoutDuration : CFTimeInterval = 30
 
 @objc public enum WebSocketErrorType: Int, CustomStringConvertible {
     case memory
@@ -585,8 +584,7 @@ private class InnerWebSocket: Hashable {
     var _eventDelegate: WebSocketDelegate?
     var _binaryType = WebSocketBinaryType.uInt8Array
     var _readyState = WebSocketReadyState.connecting
-    var _networkTimeout = TimeInterval(-1)
-
+    var _timeoutDuration : CFTimeInterval = 30
 
     var url : String {
         return request.url!.description
@@ -637,6 +635,10 @@ private class InnerWebSocket: Hashable {
         get { lock(); defer { unlock() }; return _readyState }
         set { lock(); defer { unlock() }; _readyState = newValue }
     }
+    var timeoutDuration : CFTimeInterval {
+        get { lock(); defer { unlock() }; return _timeoutDuration }
+        set { lock(); defer { unlock() }; _timeoutDuration = newValue }
+    }
 
     func copyOpen(_ request: URLRequest, subProtocols : [String] = []) -> InnerWebSocket{
         let ws = InnerWebSocket(request: request, subProtocols: subProtocols, stub: false)
@@ -649,6 +651,7 @@ private class InnerWebSocket: Hashable {
         ws.eventDelegate = eventDelegate;
         ws.binaryType = binaryType
         ws.facade = facade;
+        ws.timeoutDuration = timeoutDuration
         return ws
     }
 
@@ -1674,7 +1677,7 @@ private class Manager {
     func checkForConnectionTimeout(_ ws : InnerWebSocket) {
         if ws.rd != nil && ws.wr != nil && (ws.rd.streamStatus == .opening || ws.wr.streamStatus == .opening) {
             let age = CFAbsoluteTimeGetCurrent() - ws.createdAt
-            if age >= timeoutDuration {
+            if age >= ws.timeoutDuration {
                 ws.connectionTimeout = true
             }
         }
@@ -1807,6 +1810,11 @@ open class WebSocket: NSObject {
     /// The current state of the connection; this is one of the WebSocketReadyState constants. Read only.
     open var readyState : WebSocketReadyState{
         return ws.readyState
+    }
+    /// Network timeout duration. Default value is 30 seconds.
+    open var timeoutDuration : TimeInterval{
+        get { return TimeInterval(ws.timeoutDuration) }
+        set { ws.timeoutDuration = CFTimeInterval(newValue) }
     }
     /// Opens a deferred or closed WebSocket connection to a URL; this should be the URL to which the WebSocket server will respond.
     open func open(_ url: String){
