@@ -1704,7 +1704,7 @@ private class Manager {
 private let manager = Manager()
 
 /// WebSocket objects are bidirectional network streams that communicate over HTTP. RFC 6455.
-open class WebSocket: NSObject {
+@objcMembers open class WebSocket: NSObject {
     /// WebSocket error domain
     open static let errorDomain = "WebSocket"
     fileprivate var ws: InnerWebSocket
@@ -1890,7 +1890,6 @@ extension WebSocket {
 
      :param: text The message (string) to be sent to the server.
      */
-    @objc
     public func send(text: String){
         send(text)
     }
@@ -1899,7 +1898,6 @@ extension WebSocket {
 
      :param: data The message (binary) to be sent to the server.
      */
-    @objc
     public func send(data: Data){
         send(data)
     }
