@@ -318,7 +318,7 @@ private class UTF8 {
                 }
             }
             if ascii {
-                text += NSString(bytes: bytes, length: length, encoding: String.Encoding.ascii.rawValue) as! String
+                text += NSString(bytes: bytes, length: length, encoding: String.Encoding.ascii.rawValue)! as String
                 bcount += length
                 return
             }
@@ -763,27 +763,23 @@ private class InnerWebSocket: Hashable {
                 switch frame.code {
                 case .text:
                     fire {
-                        self.event.message(data: frame.utf8.text)
+                        self.event.message(frame.utf8.text)
                         if let facade = self.facade {
                             self.eventDelegate?.didReceiveMessage?(facade, text: frame.utf8.text)
                         }
                     }
                 case .binary:
                     fire {
-                        if let eventDelegate = self.eventDelegate {
-                            if let facade = self.facade {
-                                eventDelegate.didReceiveMessage?(facade, data: frame.payload.nsdata)
-                            }
+                        switch self.binaryType {
+                        case .uInt8Array:
+                            self.event.message(frame.payload.array)
+                        case .nsData:
+                            self.event.message(frame.payload.nsdata)
+                        case .uInt8UnsafeBufferPointer:
+                            self.event.message(frame.payload.buffer)
                         }
-                        else {
-                            switch self.binaryType {
-                            case .uInt8Array:
-                                self.event.message(data: frame.payload.array)
-                            case .nsData:
-                                self.event.message(data: frame.payload.nsdata)
-                            case .uInt8UnsafeBufferPointer:
-                                self.event.message(data: frame.payload.buffer)
-                            }
+                        if let facade = self.facade {
+                            self.eventDelegate?.didReceiveMessage?(facade, data: frame.payload.nsdata)
                         }
                     }
                 case .ping:
@@ -794,20 +790,16 @@ private class InnerWebSocket: Hashable {
                     unlock()
                 case .pong:
                     fire {
-                        if let eventDelegate = self.eventDelegate {
-                            if let facade = self.facade {
-                                eventDelegate.didReceivePong?(facade, data: frame.payload.nsdata)
-                            }
+                        switch self.binaryType {
+                        case .uInt8Array:
+                            self.event.pong(frame.payload.array)
+                        case .nsData:
+                            self.event.pong(frame.payload.nsdata)
+                        case .uInt8UnsafeBufferPointer:
+                            self.event.pong(frame.payload.buffer)
                         }
-                        else {
-                            switch self.binaryType {
-                            case .uInt8Array:
-                                self.event.pong(data: frame.payload.array)
-                            case .nsData:
-                                self.event.pong(data: frame.payload.nsdata)
-                            case .uInt8UnsafeBufferPointer:
-                                self.event.pong(data: frame.payload.buffer)
-                            }
+                        if let facade = self.facade {
+                            self.eventDelegate?.didReceivePong?(facade, data: frame.payload.nsdata)
                         }
                     }
                 case .close:
@@ -840,7 +832,7 @@ private class InnerWebSocket: Hashable {
                 fire {
                     self.event.end(Int(self.closeCode), self.closeReason, self.closeClean, self.finalError)
                     if let facade = self.facade {
-                        self.eventDelegate?.didEnd?(facade, code: Int(self.closeCode), reason: self.closeReason, wasClean: self.closeClean, error: self.finalError as? NSError)
+                        self.eventDelegate?.didEnd?(facade, code: Int(self.closeCode), reason: self.closeReason, wasClean: self.closeClean, error: self.finalError as NSError?)
                     }
                 }
                 exit = true
@@ -1185,7 +1177,7 @@ private class InnerWebSocket: Hashable {
         }
         let buffer = inputBytes!+inputBytesStart
         let bufferCount = ptr!.assumingMemoryBound(to: UInt8.self)-(inputBytes!+inputBytesStart)
-        let string = NSString(bytesNoCopy: buffer, length: bufferCount, encoding: String.Encoding.utf8.rawValue, freeWhenDone: false) as? String
+        let string = NSString(bytesNoCopy: buffer, length: bufferCount, encoding: String.Encoding.utf8.rawValue, freeWhenDone: false) as String?
         if string == nil {
             throw WebSocketError(.invalidHeader)
         }
@@ -1558,7 +1550,7 @@ private class InnerWebSocket: Hashable {
     func close(_ code : Int = 1000, reason : String = "Normal Closure") {
         let f = Frame()
         f.code = .close
-        f.statusCode = UInt16(truncatingBitPattern: code)
+        f.statusCode = UInt16(truncatingIfNeeded: code)
         f.utf8.text = reason
         sendFrame(f)
     }
