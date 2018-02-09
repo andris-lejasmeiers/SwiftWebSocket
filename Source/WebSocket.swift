@@ -208,26 +208,16 @@ private let timeoutDetails = "The operation couldn’t be completed. Operation t
     case invalidCompressionOptions
     public var description : String {
         switch self {
-        case .memory:
-            return "Memory"
-        case .needMoreInput:
-            return "NeedMoreInput"
-        case .invalidAddress:
-            return "InvalidAddress"
-        case .invalidHeader:
-            return "InvalidHeader"
-        case let .invalidResponse:
-            return "InvalidResponse"
-        case let .invalidCompressionOptions:
-            return "InvalidCompressionOptions"
-        case let .library:
-            return "Library"
-        case let .protocolFail:
-            return "ProtocolError"
-        case let .payload:
-            return "Payload"
-        case let .network:
-            return "Network"
+        case .memory: return "Memory"
+        case .needMoreInput: return "NeedMoreInput"
+        case .invalidAddress: return "InvalidAddress"
+        case .invalidHeader: return "InvalidHeader"
+        case .invalidResponse: return "InvalidResponse"
+        case .invalidCompressionOptions: return "InvalidCompressionOptions"
+        case .library: return "Library"
+        case .protocolFail: return "ProtocolError"
+        case .payload: return "Payload"
+        case .network: return "Network"
         }
     }
 }
